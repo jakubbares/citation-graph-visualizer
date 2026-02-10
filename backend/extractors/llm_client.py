@@ -264,28 +264,80 @@ Start directly with { or [ and end with } or ]."""
         print(f"⚠️  MOCK MODE: Returning fake data")
         print(f"⚠️  To use real AI, add AWS credentials to backend/.env")
         
-        if "contribution" in prompt.lower():
+        if "contribution" in prompt.lower() and "extract" in prompt.lower():
             return json.dumps([
                 {
-                    "contribution_type": "⚠️ MOCK - Novel Architecture",
+                    "contribution_type": "MOCK - Novel Architecture",
                     "specific_innovation": "This is a MOCK response. Add AWS Bedrock credentials to .env to use real AI analysis.",
                     "problem_addressed": "Testing the application without AWS credentials configured",
                     "evidence_location": "Development Mode - No Real Analysis",
                     "comment": "Run Terraform setup or add AWS credentials to backend/.env"
                 },
                 {
-                    "contribution_type": "⚠️ MOCK - Training Procedure",
+                    "contribution_type": "MOCK - Training Procedure",
                     "specific_innovation": "Configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in backend/.env",
                     "problem_addressed": "Application is running in mock mode for development",
                     "evidence_location": "See terraform/ folder for AWS setup",
                     "comment": "Request Bedrock model access in AWS Console"
                 }
             ])
+        elif "design 5-7 attributes" in prompt.lower() or "generate" in prompt.lower() and "schema" in prompt.lower():
+            # Mock schema generation
+            return json.dumps({
+                "topic": "MOCK - Research Papers",
+                "topic_description": "Mock schema - configure AI credentials for real topic detection",
+                "attributes": [
+                    {
+                        "key": "model_type",
+                        "label": "Model Type",
+                        "description": "Primary model architecture category",
+                        "value_type": "categorical",
+                        "suggested_values": ["Neural Network", "Transformer", "CNN", "GNN", "Hybrid", "Other"]
+                    },
+                    {
+                        "key": "learning_paradigm",
+                        "label": "Learning Paradigm",
+                        "description": "How the model is trained",
+                        "value_type": "categorical",
+                        "suggested_values": ["Supervised", "Self-Supervised", "Unsupervised", "Reinforcement Learning", "Other"]
+                    },
+                    {
+                        "key": "data_modality",
+                        "label": "Data Modality",
+                        "description": "Type of input data",
+                        "value_type": "categorical",
+                        "suggested_values": ["Text", "Images", "Graphs", "Audio", "Tabular", "Multi-Modal", "Other"]
+                    },
+                    {
+                        "key": "scale",
+                        "label": "Scale",
+                        "description": "Computational scale of experiments",
+                        "value_type": "categorical",
+                        "suggested_values": ["Small", "Medium", "Large", "Massive", "Unknown"]
+                    },
+                    {
+                        "key": "novelty_type",
+                        "label": "Novelty Type",
+                        "description": "Primary type of contribution",
+                        "value_type": "categorical",
+                        "suggested_values": ["Architecture", "Algorithm", "Loss Function", "Training Method", "Dataset", "Theory", "Other"]
+                    }
+                ]
+            })
+        elif "extract values for each" in prompt.lower() or "attribute" in prompt.lower() and "pick one value" in prompt.lower():
+            # Mock dynamic extraction — return plausible mock values
+            return json.dumps({
+                "model_type": "Transformer",
+                "learning_paradigm": "Supervised",
+                "data_modality": "Text",
+                "scale": "Medium",
+                "novelty_type": "Architecture"
+            })
         elif "experiment" in prompt.lower():
             return json.dumps({
                 "experiments": [{
                     "experiment_id": "mock_exp",
-                    "name": "⚠️ MOCK Experiment - Configure AWS Bedrock",
+                    "name": "MOCK Experiment - Configure AWS Bedrock",
                     "description": "This is a mock response. Add AWS credentials to backend/.env for real analysis.",
                     "task": "Setup Required",
                     "datasets": [{"name": "Run: cd terraform && terraform apply"}],
@@ -299,17 +351,9 @@ Start directly with { or [ and end with } or ]."""
                 }]
             })
         else:
-            return """⚠️ MOCK MODE ACTIVE
-
-This is a mock response because AWS Bedrock credentials are not configured.
-
-To enable real AI analysis:
-1. Run Terraform setup: cd terraform && terraform apply
-2. Copy credentials to backend/.env
-3. Request model access in AWS Console
-4. Restart backend server
-
-See terraform/README.md for detailed instructions."""
+            return json.dumps({
+                "note": "MOCK MODE - Configure AWS Bedrock or DeepSeek credentials for real AI analysis"
+            })
 
 
 # Global LLM client instance

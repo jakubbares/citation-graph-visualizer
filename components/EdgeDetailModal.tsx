@@ -1,25 +1,53 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import type { CitationEdge, ResearchGraph } from '@/lib/api';
+import { GraphAPI } from '@/lib/api';
 
 interface EdgeDetailModalProps {
   edge: CitationEdge | null;
   graph: ResearchGraph | null;
   onClose: () => void;
+  onEdgeUpdated?: (updatedEdge: CitationEdge) => void;
 }
 
-export default function EdgeDetailModal({ edge, graph, onClose }: EdgeDetailModalProps) {
-  if (!edge || !graph) return null;
+export default function EdgeDetailModal({ edge, graph, onClose, onEdgeUpdated }: EdgeDetailModalProps) {
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [localEdge, setLocalEdge] = useState<CitationEdge | null>(null);
 
-  const fromNode = graph.nodes.find(n => n.id === edge.from_paper);
-  const toNode = graph.nodes.find(n => n.id === edge.to_paper);
+  // Use localEdge if we just extracted, otherwise use prop
+  const displayEdge = localEdge?.id === edge?.id ? localEdge : edge;
 
-  const hasInnovation = edge.context && edge.context !== '' && edge.context !== 'reference';
-  const hasInsight = edge.delta_description && edge.delta_description !== '';
+  if (!displayEdge || !graph) return null;
+
+  const fromNode = graph.nodes.find(n => n.id === displayEdge.from_paper);
+  const toNode = graph.nodes.find(n => n.id === displayEdge.to_paper);
+
+  const hasInnovation = displayEdge.context && displayEdge.context !== '' && displayEdge.context !== 'reference';
+  const hasInsight = displayEdge.delta_description && displayEdge.delta_description !== '' && !displayEdge.delta_description.startsWith('Extraction failed');
+
+  const handleExtractSingle = async () => {
+    if (!graph || !displayEdge) return;
+    try {
+      setIsExtracting(true);
+      const response = await GraphAPI.extractSingleEdge(graph.id, displayEdge.id);
+      // Update local state with the result
+      setLocalEdge(response.edge);
+      onEdgeUpdated?.(response.edge);
+    } catch (err: any) {
+      console.error('Error extracting single edge:', err);
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const handleClose = () => {
+    setLocalEdge(null);
+    onClose();
+  };
 
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4" onClick={handleClose}>
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
 
@@ -36,20 +64,20 @@ export default function EdgeDetailModal({ edge, graph, onClose }: EdgeDetailModa
                 Citation Relationship
               </div>
               <div className="flex items-center gap-3">
-                {edge.contribution_type && (
+                {displayEdge.contribution_type && (
                   <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-blue-100 text-blue-700">
-                    {edge.contribution_type}
+                    {displayEdge.contribution_type}
                   </span>
                 )}
-                {edge.strength > 0 && (
+                {displayEdge.strength > 0 && (
                   <span className="text-xs text-gray-400">
-                    Strength: {(edge.strength * 100).toFixed(0)}%
+                    Strength: {(displayEdge.strength * 100).toFixed(0)}%
                   </span>
                 )}
               </div>
             </div>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -67,7 +95,7 @@ export default function EdgeDetailModal({ edge, graph, onClose }: EdgeDetailModa
               Citing paper (newer)
             </div>
             <div className="text-sm font-semibold text-gray-900">
-              {fromNode?.title || edge.from_paper}
+              {fromNode?.title || displayEdge.from_paper}
             </div>
             {fromNode?.authors && fromNode.authors.length > 0 && (
               <div className="text-xs text-gray-500 mt-1">
@@ -86,7 +114,7 @@ export default function EdgeDetailModal({ edge, graph, onClose }: EdgeDetailModa
               </svg>
               {hasInnovation && (
                 <span className="px-3 py-1 bg-amber-50 border border-amber-200 rounded-full text-xs font-semibold text-amber-700">
-                  {edge.context}
+                  {displayEdge.context}
                 </span>
               )}
               <span className="text-xs text-gray-400">cites</span>
@@ -100,7 +128,7 @@ export default function EdgeDetailModal({ edge, graph, onClose }: EdgeDetailModa
               Cited paper (older)
             </div>
             <div className="text-sm font-semibold text-gray-900">
-              {toNode?.title || edge.to_paper}
+              {toNode?.title || displayEdge.to_paper}
             </div>
             {toNode?.authors && toNode.authors.length > 0 && (
               <div className="text-xs text-gray-500 mt-1">
@@ -113,13 +141,24 @@ export default function EdgeDetailModal({ edge, graph, onClose }: EdgeDetailModa
 
         {/* Full insight */}
         <div className="px-6 py-5 overflow-y-auto flex-1">
-          {hasInsight ? (
+          {isExtracting ? (
+            <div className="text-center py-8">
+              <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-amber-50 flex items-center justify-center">
+                <svg className="w-6 h-6 text-amber-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              </div>
+              <p className="text-sm text-gray-600 font-medium">Analyzing papers...</p>
+              <p className="text-xs text-gray-400 mt-1">Using full paper text when available</p>
+            </div>
+          ) : hasInsight ? (
             <div>
               <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
                 Innovation Insight
               </div>
               <div className="prose prose-sm max-w-none text-gray-700 leading-relaxed whitespace-pre-wrap">
-                {edge.delta_description}
+                {displayEdge.delta_description}
               </div>
             </div>
           ) : (
@@ -131,16 +170,45 @@ export default function EdgeDetailModal({ edge, graph, onClose }: EdgeDetailModa
               </div>
               <p className="text-sm text-gray-500 font-medium">No innovation analysis yet</p>
               <p className="text-xs text-gray-400 mt-1">
-                Click &ldquo;Extract Edge Innovations&rdquo; in the left panel to analyze what each paper adopted from papers it cites.
+                Click the button below to analyze this specific citation.
               </p>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-gray-100 flex-shrink-0 flex justify-end">
+        <div className="px-6 py-3 border-t border-gray-100 flex-shrink-0 flex items-center justify-between">
           <button
-            onClick={onClose}
+            onClick={handleExtractSingle}
+            disabled={isExtracting}
+            className="px-4 py-2 text-sm font-bold bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+          >
+            {isExtracting ? (
+              <>
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Analyzing...
+              </>
+            ) : hasInsight ? (
+              <>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Re-analyze
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                Analyze this edge
+              </>
+            )}
+          </button>
+          <button
+            onClick={handleClose}
             className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-all"
           >
             Close

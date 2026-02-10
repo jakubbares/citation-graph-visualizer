@@ -1,34 +1,54 @@
 """
 Edge Innovation Extractor - Uses LLM to extract what innovation
 from one paper was adopted/used by another paper.
+Analyzes full paper text when available, falls back to abstracts.
 """
 import json
-import asyncio
 import concurrent.futures
 from typing import Dict, Any, Optional, List, Tuple
 from graph.models import ResearchGraph, CitationEdge, PaperNode
 from extractors.llm_client import get_llm_client
 
 
-SYSTEM_PROMPT = """You are a research analysis expert. Given two papers where Paper A cites Paper B, 
+SYSTEM_PROMPT = """You are a research analysis expert. Given two papers where Paper A cites Paper B,
 identify exactly what idea, method, technique, or result from Paper B was used by Paper A.
-Be specific and technical. Focus on the concrete contribution that was adopted or built upon."""
+Be specific and technical. Focus on the concrete contribution that was adopted or built upon.
+Cite specific sections, equations, algorithms, or results when possible."""
 
 USER_PROMPT_TEMPLATE = """Paper A (the citing paper):
 Title: {title_a}
-Abstract: {abstract_a}
+{content_a}
 
 Paper B (the cited paper):
 Title: {title_b}
-Abstract: {abstract_b}
+{content_b}
 
 What specific idea, method, or result from Paper B does Paper A use or build upon?
 
 Return JSON:
 {{
   "short_label": "max 8 words summarizing the adopted innovation",
-  "full_insight": "2-3 paragraphs explaining: (1) what Paper A took from Paper B, (2) how it was adapted or extended, (3) what is different in Paper A's approach"
+  "full_insight": "2-3 detailed paragraphs explaining: (1) what exactly Paper A took from Paper B (cite specific methods/equations/results), (2) how it was adapted or extended, (3) what is different or novel in Paper A's approach compared to Paper B"
 }}"""
+
+
+def _build_paper_content(node: PaperNode, max_chars: int = 6000) -> str:
+    """Build the content section for a paper, preferring full text over abstract."""
+    parts = []
+
+    # Use full text if available
+    full_text = (node.full_text or "").strip()
+    abstract = (node.abstract or "").strip()
+
+    if full_text and len(full_text) > len(abstract) + 100:
+        # We have real full text (not just abstract copied into full_text)
+        parts.append(f"Full text (truncated):\n{full_text[:max_chars]}")
+    elif abstract:
+        parts.append(f"Abstract:\n{abstract[:2000]}")
+    else:
+        parts.append("(no content available)")
+
+    return "\n".join(parts)
 
 
 class EdgeInnovationExtractor:
@@ -54,24 +74,26 @@ class EdgeInnovationExtractor:
         Returns:
             Dict with 'short_label' and 'full_insight'
         """
-        abstract_a = (from_node.abstract or "")[:1500]
-        abstract_b = (to_node.abstract or "")[:1500]
+        content_a = _build_paper_content(from_node)
+        content_b = _build_paper_content(to_node)
 
-        if not abstract_a and not abstract_b:
+        if content_a == "(no content available)" and content_b == "(no content available)":
             return {
                 "short_label": "citation",
-                "full_insight": "Insufficient abstract data to analyze the relationship.",
+                "full_insight": "Insufficient paper data to analyze the relationship.",
             }
 
         prompt = USER_PROMPT_TEMPLATE.format(
             title_a=from_node.title,
-            abstract_a=abstract_a or "(abstract not available)",
+            content_a=content_a,
             title_b=to_node.title,
-            abstract_b=abstract_b or "(abstract not available)",
+            content_b=content_b,
         )
 
         try:
-            result = self.llm_client.complete_json(prompt, system_prompt=SYSTEM_PROMPT, max_tokens=1024)
+            result = self.llm_client.complete_json(
+                prompt, system_prompt=SYSTEM_PROMPT, max_tokens=1500
+            )
 
             short_label = result.get("short_label", "citation")
             full_insight = result.get("full_insight", "")
@@ -89,6 +111,41 @@ class EdgeInnovationExtractor:
                 "short_label": "citation",
                 "full_insight": f"Extraction failed: {str(e)}",
             }
+
+    def extract_single_by_id(
+        self,
+        graph: ResearchGraph,
+        edge_id: str,
+    ) -> Optional[Dict[str, str]]:
+        """
+        Extract innovation info for a single edge identified by ID.
+
+        Args:
+            graph: The research graph
+            edge_id: The edge ID to extract for
+
+        Returns:
+            Dict with 'short_label' and 'full_insight', or None if edge not found
+        """
+        node_map: Dict[str, PaperNode] = {n.id: n for n in graph.nodes}
+
+        for edge in graph.edges:
+            if edge.id == edge_id:
+                from_node = node_map.get(edge.from_paper)
+                to_node = node_map.get(edge.to_paper)
+                if not from_node or not to_node:
+                    return None
+
+                print(f"   Extracting single edge: {from_node.title[:40]}... -> {to_node.title[:40]}...")
+                result = self.extract_single(edge, from_node, to_node)
+
+                # Store on the edge object in-place
+                edge.context = result["short_label"]
+                edge.delta_description = result["full_insight"]
+
+                return result
+
+        return None
 
     def extract_for_graph(
         self,
@@ -108,10 +165,8 @@ class EdgeInnovationExtractor:
         Returns:
             Number of edges processed
         """
-        # Build node lookup
         node_map: Dict[str, PaperNode] = {n.id: n for n in graph.nodes}
 
-        # Filter edges that have both endpoints with data
         edges_to_process: List[Tuple[CitationEdge, PaperNode, PaperNode]] = []
         for edge in graph.edges:
             from_node = node_map.get(edge.from_paper)
@@ -132,7 +187,6 @@ class EdgeInnovationExtractor:
             edge, from_node, to_node = item
             result = self.extract_single(edge, from_node, to_node)
 
-            # Store on the edge object
             edge.context = result["short_label"]
             edge.delta_description = result["full_insight"]
 
@@ -141,7 +195,6 @@ class EdgeInnovationExtractor:
                 on_progress(completed, total)
             print(f"   [{completed}/{total}] {from_node.title[:30]}... -> {to_node.title[:30]}...")
 
-        # Use ThreadPoolExecutor for parallel LLM calls
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
             list(executor.map(process_edge, edges_to_process))
 

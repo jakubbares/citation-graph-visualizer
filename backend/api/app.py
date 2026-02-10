@@ -20,6 +20,12 @@ from parsers.pdf_parser import PaperParser
 from extractors.architecture_extractor import ArchitectureExtractor
 from extractors.contribution_extractor import ContributionExtractor
 from extractors.survey_extractor import get_survey_extractor
+from extractors.schema_generator import (
+    get_schema_generator,
+    get_dynamic_extractor,
+    GeneratedSchema,
+    AttributeSchema,
+)
 from api.semantic_scholar import get_semantic_scholar_api
 from api.arxiv_client import get_arxiv_client
 
@@ -41,6 +47,7 @@ app.add_middleware(
 
 # Global state (in production, use proper database)
 graphs_store: Dict[str, ResearchGraph] = {}
+schemas_store: Dict[str, GeneratedSchema] = {}  # graph_id -> generated schema
 
 # Initialize services
 graph_builder = GraphBuilder()
@@ -94,6 +101,20 @@ class ClusterRequest(BaseModel):
 class ExtractEdgesRequest(BaseModel):
     graph_id: str
     max_parallel: int = 5
+
+
+class ExtractSingleEdgeRequest(BaseModel):
+    graph_id: str
+    edge_id: str
+
+
+class GenerateSchemaRequest(BaseModel):
+    graph_id: str
+
+
+class ExtractDynamicRequest(BaseModel):
+    graph_id: str
+    attribute_keys: List[str] = []  # empty = extract all schema attributes
 
 
 # Endpoints
@@ -612,6 +633,49 @@ async def extract_edge_innovations(request: ExtractEdgesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/graph/extract-single-edge")
+async def extract_single_edge_innovation(request: ExtractSingleEdgeRequest):
+    """
+    Extract innovation insight for a single edge using LLM.
+    Uses full paper text when available.
+    """
+    try:
+        graph = graphs_store.get(request.graph_id)
+        if not graph:
+            raise HTTPException(status_code=404, detail="Graph not found")
+
+        print(f"🔍 Extracting single edge: {request.edge_id}")
+
+        from extractors.edge_extractor import get_edge_extractor
+        extractor = get_edge_extractor()
+
+        result = extractor.extract_single_by_id(graph, request.edge_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Edge not found or missing paper data")
+
+        # Find the updated edge to return
+        updated_edge = None
+        for edge in graph.edges:
+            if edge.id == request.edge_id:
+                updated_edge = edge.to_dict()
+                break
+
+        print(f"✅ Single edge extracted: {result['short_label']}")
+
+        return {
+            "edge": updated_edge,
+            "result": result,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error extracting single edge: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/survey/extract")
 async def extract_survey(file: UploadFile = File(...)):
     """
@@ -668,9 +732,127 @@ async def extract_survey(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/graph/generate-schema")
+async def generate_schema(request: GenerateSchemaRequest):
+    """
+    Analyse the papers in the graph, detect the research topic,
+    and generate 5-7 custom extraction attributes tailored to that topic.
+    """
+    try:
+        graph = graphs_store.get(request.graph_id)
+        if not graph:
+            raise HTTPException(status_code=404, detail="Graph not found")
+
+        print(f"Generating custom schema for graph: {request.graph_id}")
+
+        # Build ParsedPaper list from graph nodes
+        from parsers.pdf_parser import ParsedPaper
+        papers = [
+            ParsedPaper(
+                paper_id=node.id,
+                title=node.title,
+                authors=node.authors,
+                abstract=node.abstract,
+                full_text=node.full_text or "",
+            )
+            for node in graph.nodes
+        ]
+
+        generator = get_schema_generator()
+        schema = generator.generate(papers)
+
+        # Store schema for later extraction
+        schemas_store[request.graph_id] = schema
+
+        print(f"Schema generated: {schema.topic} ({len(schema.attributes)} attributes)")
+
+        return {
+            "graph_id": request.graph_id,
+            "schema": schema.to_dict(),
+        }
+
+    except Exception as e:
+        print(f"Error generating schema: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/graph/extract-dynamic")
+async def extract_dynamic(request: ExtractDynamicRequest):
+    """
+    Extract paper attributes according to the previously generated schema.
+    Optionally restrict to a subset of attribute keys.
+    """
+    try:
+        graph = graphs_store.get(request.graph_id)
+        if not graph:
+            raise HTTPException(status_code=404, detail="Graph not found")
+
+        schema = schemas_store.get(request.graph_id)
+        if not schema:
+            raise HTTPException(
+                status_code=400,
+                detail="No schema generated yet. Call /api/graph/generate-schema first.",
+            )
+
+        # If caller specified a subset of keys, filter the schema
+        if request.attribute_keys:
+            from extractors.schema_generator import GeneratedSchema
+            filtered_attrs = [
+                a for a in schema.attributes if a.key in request.attribute_keys
+            ]
+            work_schema = GeneratedSchema(
+                topic=schema.topic,
+                topic_description=schema.topic_description,
+                attributes=filtered_attrs,
+            )
+        else:
+            work_schema = schema
+
+        print(f"Extracting {len(work_schema.attributes)} attributes for {len(graph.nodes)} papers...")
+
+        extractor = get_dynamic_extractor()
+        results = extractor.extract_for_graph(graph, work_schema)
+
+        # Mark schema extraction as applied
+        if "dynamic_schema" not in graph.extractors_applied:
+            graph.extractors_applied.append("dynamic_schema")
+
+        print(f"Dynamic extraction complete!")
+
+        return {
+            "graph_id": request.graph_id,
+            "schema": schema.to_dict(),
+            "results": results,
+            "graph": graph.to_dict(),
+            "stats": {
+                "papers_processed": len(results),
+                "attributes_extracted": len(work_schema.attributes),
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error extracting dynamic attributes: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/graph/{graph_id}/schema")
+async def get_schema(graph_id: str):
+    """Get the generated schema for a graph."""
+    schema = schemas_store.get(graph_id)
+    if not schema:
+        raise HTTPException(status_code=404, detail="No schema generated for this graph")
+    return schema.to_dict()
+
+
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting Citation Graph Visualizer API...")
-    print("📍 API will be available at: http://localhost:8000")
-    print("📖 API docs at: http://localhost:8000/docs")
+    print("Starting Citation Graph Visualizer API...")
+    print("API will be available at: http://localhost:8000")
+    print("API docs at: http://localhost:8000/docs")
     uvicorn.run(app, host="0.0.0.0", port=8000)

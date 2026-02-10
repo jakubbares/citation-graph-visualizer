@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import cytoscape, { Core, NodeSingular } from 'cytoscape';
 import cytoscapeDagre from 'cytoscape-dagre';
-import type { ResearchGraph, CitationEdge } from '@/lib/api';
+import type { ResearchGraph, CitationEdge, GeneratedSchema } from '@/lib/api';
 import { getModernCytoscapeStyle, LAYOUT_CONFIGS } from '@/lib/graph-styles';
 
 // Register dagre layout extension (needed for timeline & hierarchical)
@@ -16,6 +16,8 @@ interface GraphCanvasProps {
   onNodeSelect?: (nodeId: string) => void;
   onEdgeSelect?: (edge: CitationEdge | null) => void;
   layout?: LayoutType;
+  schema?: GeneratedSchema | null;
+  activeOverlays?: string[];
 }
 
 interface TooltipState {
@@ -39,7 +41,9 @@ export default function GraphCanvas({
   graph,
   onNodeSelect,
   onEdgeSelect,
-  layout: initialLayout = 'timeline'
+  layout: initialLayout = 'timeline',
+  schema = null,
+  activeOverlays = [],
 }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
@@ -305,6 +309,112 @@ export default function GraphCanvas({
     }
   };
 
+  // ===================== Overlay colouring =====================
+  // Build a value→colour map for the first active overlay
+  const overlayColorMap = useMemo(() => {
+    if (!schema || activeOverlays.length === 0 || !graph) return null;
+    const attrKey = activeOverlays[0]; // use first active overlay for colouring
+    const attrSchema = schema.attributes.find(a => a.key === attrKey);
+    if (!attrSchema) return null;
+
+    // Collect all unique values from the graph nodes
+    const valuesSet = new Set<string>();
+    for (const n of graph.nodes) {
+      const v = n.attributes?.[attrKey];
+      if (v) valuesSet.add(String(v));
+    }
+
+    // Map values to palette colours. Suggested values get priority.
+    const colorMap = new Map<string, string>();
+    const palette = attrSchema.color_palette.length > 0
+      ? attrSchema.color_palette
+      : ['#6366F1', '#F59E0B', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6', '#F97316'];
+
+    let ci = 0;
+    for (const sv of attrSchema.suggested_values) {
+      if (valuesSet.has(sv)) {
+        colorMap.set(sv, palette[ci % palette.length]);
+        ci++;
+      }
+    }
+    // Remaining unseen values
+    for (const v of valuesSet) {
+      if (!colorMap.has(v)) {
+        colorMap.set(v, palette[ci % palette.length]);
+        ci++;
+      }
+    }
+
+    return { key: attrKey, label: attrSchema.label, map: colorMap };
+  }, [schema, activeOverlays, graph]);
+
+  // Apply overlay colours to the cy instance whenever they change
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || !graph) return;
+
+    if (overlayColorMap) {
+      // Colour nodes by the overlay attribute
+      cy.nodes().forEach(node => {
+        const val = node.data(overlayColorMap.key);
+        const color = val ? overlayColorMap.map.get(String(val)) : undefined;
+        if (color) {
+          node.style({
+            'background-color': color,
+            'border-color': darkenHex(color, 0.25),
+          });
+        } else {
+          // No value → fade slightly
+          node.style({
+            'background-color': '#CBD5E1',
+            'border-color': '#94A3B8',
+          });
+        }
+      });
+    } else {
+      // Reset to default source-based colouring
+      cy.nodes().forEach(node => {
+        const src = node.data('paper_source');
+        if (src === 'reviewed') {
+          node.style({ 'background-color': '#10B981', 'border-color': '#047857' });
+        } else {
+          node.style({ 'background-color': '#94A3B8', 'border-color': '#64748B' });
+        }
+      });
+    }
+  }, [overlayColorMap, graph]);
+
+  // Build badge data for each visible node
+  const nodeBadges = useMemo(() => {
+    if (!schema || activeOverlays.length === 0 || !graph) return new Map<string, Array<{label: string; value: string; color: string}>>();
+
+    const badgeMap = new Map<string, Array<{label: string; value: string; color: string}>>();
+
+    // For attributes beyond the first (which colours the node), show as text badges
+    const overlayAttrs = activeOverlays.map(k => schema.attributes.find(a => a.key === k)).filter(Boolean);
+
+    for (const node of graph.nodes) {
+      const badges: Array<{label: string; value: string; color: string}> = [];
+      for (const attr of overlayAttrs) {
+        if (!attr) continue;
+        const val = node.attributes?.[attr.key];
+        if (val && String(val) !== 'Unknown') {
+          const palette = attr.color_palette.length > 0
+            ? attr.color_palette
+            : ['#6366F1', '#F59E0B', '#10B981', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6'];
+          const vi = attr.suggested_values.indexOf(String(val));
+          const color = vi >= 0 ? palette[vi % palette.length] : palette[0];
+          badges.push({ label: attr.label, value: String(val), color });
+        }
+      }
+      if (badges.length > 0) {
+        badgeMap.set(node.id, badges);
+      }
+    }
+
+    return badgeMap;
+  }, [schema, activeOverlays, graph]);
+
   // ===================== Render =====================
   if (!graph) {
     return (
@@ -478,6 +588,25 @@ export default function GraphCanvas({
         </div>
       </div>
 
+      {/* ===== Overlay colour legend (bottom center) ===== */}
+      {overlayColorMap && (
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2">
+          <div className="bg-white/95 backdrop-blur-sm px-5 py-3 rounded-xl shadow-lg border border-gray-200">
+            <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
+              Colored by: {overlayColorMap.label}
+            </div>
+            <div className="flex flex-wrap gap-2 max-w-lg">
+              {Array.from(overlayColorMap.map.entries()).map(([val, color]) => (
+                <div key={val} className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                  <span className="text-xs font-medium text-gray-700 whitespace-nowrap">{val}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ===== Hint (bottom right) ===== */}
       <div className="absolute bottom-4 right-4 bg-gray-900/80 backdrop-blur-sm text-white px-4 py-2 rounded-lg text-xs">
         <span className="opacity-75">Click edge for details | Double-click node to focus | Scroll to zoom</span>
@@ -513,6 +642,27 @@ export default function GraphCanvas({
                   {tooltip.citations} citations
                 </div>
               )}
+              {/* Show active overlay badges on tooltip */}
+              {tooltip.title && (() => {
+                // Find the node by title to get its ID
+                const tooltipNode = graph?.nodes.find(n => n.title === tooltip.title);
+                const badges = tooltipNode ? nodeBadges.get(tooltipNode.id) : undefined;
+                if (!badges || badges.length === 0) return null;
+                return (
+                  <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-gray-100">
+                    {badges.map((b, i) => (
+                      <span
+                        key={i}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                        style={{ backgroundColor: `${b.color}20`, color: b.color }}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: b.color }} />
+                        {b.value}
+                      </span>
+                    ))}
+                  </div>
+                );
+              })()}
               {tooltip.abstract && (
                 <div className="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-600 line-clamp-3">
                   {tooltip.abstract}
@@ -615,4 +765,14 @@ function convertGraphToCytoscape(graph: ResearchGraph) {
 function truncateTitle(title: string, maxLength: number): string {
   if (title.length <= maxLength) return title;
   return title.substring(0, maxLength - 3) + '...';
+}
+
+/** Darken a hex colour by a fraction (0-1). */
+function darkenHex(hex: string, amount: number): string {
+  const h = hex.replace('#', '');
+  const num = parseInt(h, 16);
+  const r = Math.max(0, ((num >> 16) & 0xff) * (1 - amount)) | 0;
+  const g = Math.max(0, ((num >> 8) & 0xff) * (1 - amount)) | 0;
+  const b = Math.max(0, (num & 0xff) * (1 - amount)) | 0;
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
 }

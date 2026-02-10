@@ -6,7 +6,14 @@ import PaperUpload from '@/components/PaperUpload';
 import ExtractorPanel from '@/components/ExtractorPanel';
 import VisualEncodingPanel from '@/components/VisualEncodingPanel';
 import EdgeDetailModal from '@/components/EdgeDetailModal';
-import { GraphAPI, type ResearchGraph, type ExtractorConfig, type CitationEdge } from '@/lib/api';
+import InnovationFlowPanel from '@/components/InnovationFlowPanel';
+import {
+  GraphAPI,
+  type ResearchGraph,
+  type ExtractorConfig,
+  type CitationEdge,
+  type GeneratedSchema,
+} from '@/lib/api';
 
 export default function Home() {
   const [graph, setGraph] = useState<ResearchGraph | null>(null);
@@ -18,10 +25,21 @@ export default function Home() {
   const [selectedEdge, setSelectedEdge] = useState<CitationEdge | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Dynamic schema state
+  const [schema, setSchema] = useState<GeneratedSchema | null>(null);
+  const [isGeneratingSchema, setIsGeneratingSchema] = useState(false);
+  const [isExtractingDynamic, setIsExtractingDynamic] = useState(false);
+  const [dynamicExtracted, setDynamicExtracted] = useState(false);
+  const [activeOverlays, setActiveOverlays] = useState<string[]>([]);
+
   const handleBuildGraph = async (papers: Array<{type: 'arxiv' | 'doi' | 'pdf', value: string} | File>, includeIntermediate: boolean) => {
     try {
       setIsBuilding(true);
       setError(null);
+      // Reset schema state for new graph
+      setSchema(null);
+      setDynamicExtracted(false);
+      setActiveOverlays([]);
       console.log('Building graph from papers:', papers);
       console.log('Include intermediate papers:', includeIntermediate);
 
@@ -99,6 +117,63 @@ export default function Home() {
     }
   };
 
+  // ── Dynamic schema handlers ──────────────────────────────
+
+  const handleGenerateSchema = async () => {
+    if (!graph) return;
+
+    try {
+      setIsGeneratingSchema(true);
+      setError(null);
+      console.log('Generating custom schema...');
+
+      const response = await GraphAPI.generateSchema(graph.id);
+      setSchema(response.schema);
+      // Reset extraction state since schema changed
+      setDynamicExtracted(false);
+      setActiveOverlays([]);
+
+      console.log('Schema generated:', response.schema.topic);
+    } catch (err: any) {
+      console.error('Error generating schema:', err);
+      setError(err.message || 'Failed to generate schema');
+    } finally {
+      setIsGeneratingSchema(false);
+    }
+  };
+
+  const handleExtractDynamic = async (attributeKeys: string[]) => {
+    if (!graph) return;
+
+    try {
+      setIsExtractingDynamic(true);
+      setError(null);
+      console.log('Extracting dynamic attributes:', attributeKeys);
+
+      const response = await GraphAPI.extractDynamic(graph.id, attributeKeys);
+      setGraph(response.graph);
+      setSchema(response.schema);
+      setDynamicExtracted(true);
+      // Auto-enable first overlay
+      if (attributeKeys.length > 0) {
+        setActiveOverlays([attributeKeys[0]]);
+      }
+
+      console.log('Dynamic extraction complete:', response.stats);
+    } catch (err: any) {
+      console.error('Error extracting dynamic attributes:', err);
+      setError(err.message || 'Failed to extract dynamic attributes');
+    } finally {
+      setIsExtractingDynamic(false);
+    }
+  };
+
+  const handleToggleOverlay = (key: string) => {
+    setActiveOverlays(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key],
+    );
+  };
+
   const edgesExtracted = graph?.extractors_applied?.includes('edge_innovations') ?? false;
 
   return (
@@ -138,6 +213,13 @@ export default function Home() {
             const visibleEdges = graph.edges.filter(e => !inputIds.has(e.from_paper) && !inputIds.has(e.to_paper));
             return (
               <div className="flex items-center gap-4">
+                {/* Topic badge in header */}
+                {schema && (
+                  <div className="flex items-center gap-2 px-4 py-2 glass rounded-xl">
+                    <div className="w-2 h-2 rounded-full bg-indigo-400 pulse-glow" />
+                    <span className="text-sm font-semibold text-indigo-300">{schema.topic}</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-3 px-6 py-3 glass rounded-xl glow-blue">
                   <div className="w-3 h-3 rounded-full bg-emerald-400 pulse-glow"></div>
                   <div>
@@ -203,6 +285,14 @@ export default function Home() {
                   isLoading={isExtracting}
                   isExtractingEdges={isExtractingEdges}
                   edgesExtracted={edgesExtracted}
+                  schema={schema}
+                  onGenerateSchema={handleGenerateSchema}
+                  isGeneratingSchema={isGeneratingSchema}
+                  onExtractDynamic={handleExtractDynamic}
+                  isExtractingDynamic={isExtractingDynamic}
+                  dynamicExtracted={dynamicExtracted}
+                  activeOverlays={activeOverlays}
+                  onToggleOverlay={handleToggleOverlay}
                 />
                 
                 <VisualEncodingPanel
@@ -240,6 +330,8 @@ export default function Home() {
             onNodeSelect={setSelectedNodeId}
             onEdgeSelect={setSelectedEdge}
             layout="timeline"
+            schema={schema}
+            activeOverlays={activeOverlays}
           />
         </div>
       </div>
@@ -249,6 +341,15 @@ export default function Home() {
         edge={selectedEdge}
         graph={graph}
         onClose={() => setSelectedEdge(null)}
+        onEdgeUpdated={(updatedEdge) => {
+          // Update the edge in the graph state so labels refresh
+          if (graph) {
+            const newEdges = graph.edges.map(e =>
+              e.id === updatedEdge.id ? updatedEdge : e
+            );
+            setGraph({ ...graph, edges: newEdges });
+          }
+        }}
       />
     </div>
   );

@@ -68,6 +68,38 @@ export interface FilterCondition {
   value: any;
 }
 
+// ── Dynamic schema types ──────────────────────────────
+export interface AttributeSchema {
+  key: string;
+  label: string;
+  description: string;
+  value_type: string;
+  suggested_values: string[];
+  color_palette: string[];
+}
+
+export interface GeneratedSchema {
+  topic: string;
+  topic_description: string;
+  attributes: AttributeSchema[];
+}
+
+export interface GenerateSchemaResponse {
+  graph_id: string;
+  schema: GeneratedSchema;
+}
+
+export interface ExtractDynamicResponse {
+  graph_id: string;
+  schema: GeneratedSchema;
+  results: Record<string, Record<string, string>>;
+  graph: ResearchGraph;
+  stats: {
+    papers_processed: number;
+    attributes_extracted: number;
+  };
+}
+
 export class GraphAPI {
   /**
    * Build a graph from paper identifiers (ArXiv/DOI) or uploaded PDF files
@@ -272,6 +304,32 @@ export class GraphAPI {
   }
 
   /**
+   * Extract innovation for a single edge using LLM
+   */
+  static async extractSingleEdge(
+    graphId: string,
+    edgeId: string
+  ): Promise<{ edge: CitationEdge; result: { short_label: string; full_insight: string } }> {
+    const response = await fetch(`${API_BASE_URL}/api/graph/extract-single-edge`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        graph_id: graphId,
+        edge_id: edgeId,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to extract edge: ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  /**
    * List all graphs
    */
   static async listGraphs(): Promise<any[]> {
@@ -283,5 +341,65 @@ export class GraphAPI {
 
     const data = await response.json();
     return data.graphs;
+  }
+
+  // ── Dynamic schema endpoints ──────────────────────────────
+
+  /**
+   * Generate a custom extraction schema based on the paper topics.
+   * The LLM analyses the papers and produces 5-7 attributes tailored
+   * to the specific research area.
+   */
+  static async generateSchema(graphId: string): Promise<GenerateSchemaResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/graph/generate-schema`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph_id: graphId }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to generate schema: ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Extract attributes from all papers using the generated schema.
+   * Optionally restrict to a subset of attribute keys.
+   */
+  static async extractDynamic(
+    graphId: string,
+    attributeKeys: string[] = [],
+  ): Promise<ExtractDynamicResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/graph/extract-dynamic`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        graph_id: graphId,
+        attribute_keys: attributeKeys,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to extract dynamic attributes: ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Get the schema for a graph (if previously generated).
+   */
+  static async getSchema(graphId: string): Promise<GeneratedSchema> {
+    const response = await fetch(`${API_BASE_URL}/api/graph/${graphId}/schema`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to get schema: ${response.statusText}`);
+    }
+
+    return response.json();
   }
 }
