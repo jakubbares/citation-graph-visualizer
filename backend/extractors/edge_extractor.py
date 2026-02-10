@@ -28,7 +28,7 @@ What specific idea, method, or result from Paper B does Paper A use or build upo
 Return JSON:
 {{
   "short_label": "max 8 words summarizing the adopted innovation",
-  "full_insight": "2-3 detailed paragraphs explaining: (1) what exactly Paper A took from Paper B (cite specific methods/equations/results), (2) how it was adapted or extended, (3) what is different or novel in Paper A's approach compared to Paper B"
+  "full_insight": "One concise paragraph (3-5 sentences): what Paper A took from Paper B, how it was adapted, and what is different."
 }}"""
 
 
@@ -92,7 +92,7 @@ class EdgeInnovationExtractor:
 
         try:
             result = self.llm_client.complete_json(
-                prompt, system_prompt=SYSTEM_PROMPT, max_tokens=1500
+                prompt, system_prompt=SYSTEM_PROMPT, max_tokens=512
             )
 
             short_label = result.get("short_label", "citation")

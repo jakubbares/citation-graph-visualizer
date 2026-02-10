@@ -334,6 +334,14 @@ export default function Home() {
             activeOverlays={activeOverlays}
           />
         </div>
+
+        {/* Right panel - Innovation Flow */}
+        {graph && edgesExtracted && (
+          <InnovationFlowPanel
+            graph={graph}
+            onEdgeClick={setSelectedEdge}
+          />
+        )}
       </div>
 
       {/* Edge Detail Modal */}

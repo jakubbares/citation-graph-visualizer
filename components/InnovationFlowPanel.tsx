@@ -20,19 +20,23 @@ export default function InnovationFlowPanel({ graph, onEdgeClick }: InnovationFl
     return map;
   }, [graph]);
 
-  // Get visible edges (exclude input/review paper edges) that have innovation data
+  // Get ALL edges that have real innovation data
+  // Include review-to-paper edges too -- the panel shows the knowledge flow
   const visibleEdges = useMemo(() => {
     if (!graph) return [];
 
-    const inputIds = new Set(
-      graph.nodes.filter(n => n.attributes?.paper_source === 'input').map(n => n.id)
-    );
+    // Edges with actual innovation content (not just "citation" or "reference")
+    const trivialLabels = new Set(['', 'reference', 'citation', 'related']);
 
     return graph.edges
-      .filter(e => !inputIds.has(e.from_paper) && !inputIds.has(e.to_paper))
-      .filter(e => e.context && e.context !== '' && e.context !== 'reference')
+      .filter(e => {
+        const hasLabel = e.context && !trivialLabels.has(e.context.toLowerCase());
+        const hasInsight = e.delta_description && e.delta_description.length > 30
+          && !e.delta_description.startsWith('Extraction failed')
+          && !e.delta_description.startsWith('Insufficient');
+        return hasLabel || hasInsight;
+      })
       .sort((a, b) => {
-        // Sort by strength descending, then alphabetically by context
         if (b.strength !== a.strength) return b.strength - a.strength;
         return (a.context || '').localeCompare(b.context || '');
       });
