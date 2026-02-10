@@ -160,6 +160,29 @@ class BedrockLLMClient:
             self.mock_mode = True
             return self._mock_response(prompt)
     
+    def chat_completion(self, messages: list, max_tokens: int = 4096) -> str:
+        """
+        Get chat completion with message list (compatible with survey extractor)
+        
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            LLM response as string
+        """
+        # Extract system and user messages
+        system_prompt = None
+        user_prompt = ""
+        
+        for msg in messages:
+            if msg['role'] == 'system':
+                system_prompt = msg['content']
+            elif msg['role'] == 'user':
+                user_prompt = msg['content']
+        
+        return self.complete(user_prompt, system_prompt, max_tokens)
+    
     def complete_json(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 4096) -> Dict[str, Any]:
         """
         Get JSON completion from LLM

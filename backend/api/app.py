@@ -1,23 +1,27 @@
 """
 FastAPI application for Citation Graph Visualizer backend
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import io
 import sys
 import os
+import time
 
 # Add backend to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from graph.models import ResearchGraph
 from graph.builder import GraphBuilder
+from graph.clustering import get_clusterer
 from parsers.pdf_parser import PaperParser
 from extractors.architecture_extractor import ArchitectureExtractor
 from extractors.contribution_extractor import ContributionExtractor
+from extractors.survey_extractor import get_survey_extractor
 from api.semantic_scholar import get_semantic_scholar_api
+from api.arxiv_client import get_arxiv_client
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -44,7 +48,13 @@ pdf_parser = PaperParser()
 
 
 # Request/Response Models
+class PaperIdentifier(BaseModel):
+    type: str  # 'arxiv', 'doi', or 'pdf'
+    value: str  # arxiv ID, DOI, or filename
+
+
 class BuildGraphRequest(BaseModel):
+    papers: List[PaperIdentifier] = []
     include_intermediate_papers: bool = False
     max_intermediate_depth: int = 1
     min_citation_strength: float = 0.2
@@ -73,6 +83,19 @@ class PathRequest(BaseModel):
     ranking: str = "shortest"
 
 
+class ClusterRequest(BaseModel):
+    graph_id: str
+    method: str = "content"  # 'content', 'citations', 'hybrid'
+    n_clusters: int = 5
+    content_weight: float = 0.7
+    citation_weight: float = 0.3
+
+
+class ExtractEdgesRequest(BaseModel):
+    graph_id: str
+    max_parallel: int = 5
+
+
 # Endpoints
 @app.get("/")
 async def root():
@@ -92,51 +115,148 @@ async def root():
 
 @app.post("/api/graph/build")
 async def build_graph(
-    files: List[UploadFile] = File(...),
+    files: List[UploadFile] = File(default=[]),
+    paper_identifiers: Optional[str] = Form(default=None),
     include_intermediate: bool = False,
     max_depth: int = 1
 ):
     """
-    Build citation graph from uploaded PDF files
+    Build citation graph from paper identifiers (ArXiv IDs, DOIs) or uploaded PDF files
     """
     try:
-        print(f"📚 Received {len(files)} files for graph building")
+        print(f"📚 Starting graph build...")
         
-        # Parse all papers
         papers = []
-        for file in files:
-            print(f"📄 Parsing: {file.filename}")
-            content = await file.read()
+        paper_titles = []
+        
+        # Handle paper identifiers (ArXiv/DOI)
+        arxiv_id_map = {}  # Map title to ArXiv ID
+        if paper_identifiers:
+            import json
+            identifiers = json.loads(paper_identifiers)
+            print(f"📋 Processing {len(identifiers)} paper identifiers")
             
-            # Save temporarily to parse
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-                tmp.write(content)
-                tmp_path = tmp.name
+            arxiv_client = get_arxiv_client()
+            s2_api = get_semantic_scholar_api()
             
-            try:
-                # Generate paper ID from filename
-                paper_id = file.filename.replace('.pdf', '').replace(' ', '_')
+            for identifier in identifiers:
+                id_type = identifier.get('type')
+                value = identifier.get('value')
                 
-                # Parse PDF
-                paper = pdf_parser.parse_pdf(tmp_path, paper_id)
-                papers.append(paper)
-            finally:
-                # Clean up temp file
-                import os
-                os.unlink(tmp_path)
+                if id_type == 'arxiv':
+                    print(f"📄 Fetching ArXiv paper: {value}")
+                    arxiv_data = arxiv_client.get_paper_by_id(value)
+                    
+                    if arxiv_data:
+                        # Create ParsedPaper from ArXiv data
+                        from parsers.pdf_parser import ParsedPaper
+                        paper = ParsedPaper(
+                            paper_id=arxiv_data['arxiv_id'],
+                            title=arxiv_data['title'],
+                            authors=arxiv_data['authors'],
+                            abstract=arxiv_data['abstract'],
+                            full_text=arxiv_data['abstract'],  # Use abstract as text
+                            metadata={
+                                'year': arxiv_data.get('year'),
+                                'arxiv_url': arxiv_data.get('arxiv_url'),
+                                'pdf_url': arxiv_data.get('pdf_url'),
+                                'categories': arxiv_data.get('categories', []),
+                                'arxiv_id': value  # Store ArXiv ID
+                            }
+                        )
+                        papers.append(paper)
+                        paper_titles.append(arxiv_data['title'])
+                        arxiv_id_map[arxiv_data['title']] = value
+                    else:
+                        # Fallback: use Semantic Scholar to get paper by ArXiv ID
+                        print(f"⚠️  ArXiv failed for {value}, falling back to Semantic Scholar...")
+                        s2_paper = s2_api.search_paper(value, arxiv_id=value)
+                        
+                        if s2_paper:
+                            from parsers.pdf_parser import ParsedPaper
+                            paper = ParsedPaper(
+                                paper_id=value,
+                                title=s2_paper['title'],
+                                authors=[a.get('name', '') for a in s2_paper.get('authors', [])],
+                                abstract=s2_paper.get('abstract', '') or '',
+                                full_text=s2_paper.get('abstract', '') or '',
+                                metadata={
+                                    'year': s2_paper.get('year'),
+                                    'arxiv_id': value,
+                                    'paper_id': s2_paper.get('paperId')
+                                }
+                            )
+                            papers.append(paper)
+                            paper_titles.append(s2_paper['title'])
+                            arxiv_id_map[s2_paper['title']] = value
+                            print(f"✅ Got paper from S2: {s2_paper['title'][:60]}...")
+                        else:
+                            print(f"❌ Could not find paper {value} on ArXiv or Semantic Scholar")
+                    
+                    time.sleep(0.3)  # Rate limiting
+                
+                elif id_type == 'doi':
+                    print(f"📄 Searching for DOI paper: {value}")
+                    # Use Semantic Scholar to search by DOI
+                    s2_paper = s2_api.search_paper(f"DOI:{value}")
+                    
+                    if s2_paper:
+                        from parsers.pdf_parser import ParsedPaper
+                        paper = ParsedPaper(
+                            paper_id=s2_paper.get('paperId', value.replace('/', '_')),
+                            title=s2_paper['title'],
+                            authors=[a.get('name', '') for a in s2_paper.get('authors', [])],
+                            abstract=s2_paper.get('abstract', ''),
+                            full_text=s2_paper.get('abstract', ''),
+                            metadata={
+                                'year': s2_paper.get('year'),
+                                'doi': value,
+                                'paper_id': s2_paper.get('paperId')
+                            }
+                        )
+                        papers.append(paper)
+                        paper_titles.append(s2_paper['title'])
+                    
+                    time.sleep(0.3)
+        
+        # Handle PDF files
+        if files:
+            print(f"📚 Processing {len(files)} PDF files")
+            for file in files:
+                print(f"📄 Parsing: {file.filename}")
+                content = await file.read()
+                
+                # Save temporarily to parse
+                import tempfile
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+                    tmp.write(content)
+                    tmp_path = tmp.name
+                
+                try:
+                    # Generate paper ID from filename
+                    paper_id = file.filename.replace('.pdf', '').replace(' ', '_')
+                    
+                    # Parse PDF
+                    paper = pdf_parser.parse_pdf(tmp_path, paper_id)
+                    papers.append(paper)
+                    paper_titles.append(paper.title)
+                finally:
+                    # Clean up temp file
+                    import os
+                    os.unlink(tmp_path)
+        
+        if not papers:
+            raise HTTPException(status_code=400, detail="No papers provided")
         
         print(f"✅ Parsed {len(papers)} papers")
-        
-        # Get paper titles
-        paper_titles = [p.title for p in papers]
         
         # Build citation network using Semantic Scholar
         print("🔍 Fetching citation data from Semantic Scholar...")
         s2_api = get_semantic_scholar_api()
         citation_network = s2_api.build_citation_network(
             paper_titles,
-            max_intermediate_papers=100 if include_intermediate else 0
+            max_intermediate_papers=100 if include_intermediate else 0,
+            arxiv_ids=arxiv_id_map
         )
         
         # Build graph
@@ -396,6 +516,156 @@ async def list_graphs():
             for g in graphs_store.values()
         ]
     }
+
+
+@app.post("/api/graph/cluster")
+async def cluster_graph(request: ClusterRequest):
+    """
+    Cluster papers in graph by content or citation structure
+    """
+    try:
+        graph = graphs_store.get(request.graph_id)
+        if not graph:
+            raise HTTPException(status_code=404, detail="Graph not found")
+        
+        print(f"🔍 Clustering graph: {request.graph_id} (method: {request.method})")
+        
+        clusterer = get_clusterer()
+        
+        if request.method == "content":
+            graph = clusterer.cluster_by_content(graph, n_clusters=request.n_clusters)
+        elif request.method == "citations":
+            graph = clusterer.cluster_by_citations(graph, n_clusters=request.n_clusters)
+        elif request.method == "hybrid":
+            graph = clusterer.cluster_hybrid(
+                graph,
+                n_clusters=request.n_clusters,
+                content_weight=request.content_weight,
+                citation_weight=request.citation_weight
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown clustering method: {request.method}")
+        
+        # Get cluster summaries
+        summaries = clusterer.get_cluster_summaries(graph, top_terms=10)
+        
+        # Update stored graph
+        graphs_store[request.graph_id] = graph
+        
+        return {
+            "graph": graph.to_dict(),
+            "clusters": summaries,
+            "stats": {
+                "n_clusters": len(summaries),
+                "method": request.method
+            }
+        }
+    
+    except Exception as e:
+        print(f"❌ Error clustering graph: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/graph/extract-edges")
+async def extract_edge_innovations(request: ExtractEdgesRequest):
+    """
+    Extract innovation flow for all edges using LLM.
+    For each citation edge, the LLM identifies what specific idea/method
+    from the cited paper was adopted by the citing paper.
+    """
+    try:
+        graph = graphs_store.get(request.graph_id)
+        if not graph:
+            raise HTTPException(status_code=404, detail="Graph not found")
+
+        print(f"🔍 Extracting edge innovations for graph: {request.graph_id}")
+        print(f"   Edges to process: {len(graph.edges)}")
+
+        from extractors.edge_extractor import get_edge_extractor
+        extractor = get_edge_extractor()
+
+        processed = extractor.extract_for_graph(
+            graph,
+            max_parallel=request.max_parallel,
+        )
+
+        # Mark extractor as applied
+        if "edge_innovations" not in graph.extractors_applied:
+            graph.extractors_applied.append("edge_innovations")
+
+        print(f"✅ Edge innovations extracted: {processed} edges processed")
+
+        return {
+            "graph": graph.to_dict(),
+            "stats": {
+                "edges_processed": processed,
+                "total_edges": len(graph.edges),
+            },
+        }
+
+    except Exception as e:
+        print(f"❌ Error extracting edge innovations: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/survey/extract")
+async def extract_survey(file: UploadFile = File(...)):
+    """
+    Extract ground truth data from a survey/review paper PDF
+    """
+    try:
+        print(f"📚 Extracting ground truth from survey: {file.filename}")
+        
+        # Read and parse PDF
+        content = await file.read()
+        
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        try:
+            # Parse PDF
+            parsed_paper = pdf_parser.parse_pdf(tmp_path, file.filename.replace('.pdf', ''))
+            
+            # Extract ground truth
+            survey_extractor = get_survey_extractor()
+            ground_truth = survey_extractor.extract_from_survey(
+                parsed_paper.full_text,
+                parsed_paper.title
+            )
+            
+            # Convert to evaluation format
+            eval_data = survey_extractor.convert_to_evaluation_format(ground_truth)
+            
+            print(f"✅ Extracted ground truth:")
+            print(f"   - Categories: {len(ground_truth.categories)}")
+            print(f"   - Papers: {len(ground_truth.papers)}")
+            print(f"   - Relationships: {len(ground_truth.relationships)}")
+            
+            return {
+                "survey_title": ground_truth.survey_title,
+                "ground_truth": eval_data,
+                "stats": {
+                    "n_categories": len(ground_truth.categories),
+                    "n_papers": len(ground_truth.papers),
+                    "n_relationships": len(ground_truth.relationships)
+                }
+            }
+            
+        finally:
+            import os
+            os.unlink(tmp_path)
+    
+    except Exception as e:
+        print(f"❌ Error extracting survey: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

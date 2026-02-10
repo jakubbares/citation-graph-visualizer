@@ -60,6 +60,42 @@ class DeepSeekClient:
             print(f"❌ DeepSeek API Error: {e}")
             raise
     
+    def chat_completion(self, messages: list, max_tokens: int = 4096) -> str:
+        """
+        Get chat completion from DeepSeek with message list
+        
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            LLM response as string
+        """
+        try:
+            response = requests.post(
+                self.api_url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}"
+                },
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": 0.1
+                },
+                timeout=120
+            )
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            return data['choices'][0]['message']['content']
+            
+        except Exception as e:
+            print(f"❌ DeepSeek API Error: {e}")
+            raise
+    
     def complete_streaming(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 16384) -> Iterator[str]:
         """
         Get streaming text completion from DeepSeek for LONG outputs

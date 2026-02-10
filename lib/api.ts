@@ -9,8 +9,9 @@ export interface PaperNode {
   title: string;
   authors: string[];
   publication_date?: string;
-  venue: string;
+  venue?: string;
   abstract: string;
+  citation_count?: number;
   attributes: Record<string, any>;
   visual: {
     color: string;
@@ -27,6 +28,7 @@ export interface CitationEdge {
   contribution_type: string;
   strength: number;
   context: string;
+  delta_description?: string;
   visual: {
     color: string;
     thickness: number;
@@ -68,10 +70,10 @@ export interface FilterCondition {
 
 export class GraphAPI {
   /**
-   * Build a graph from uploaded PDF files
+   * Build a graph from paper identifiers (ArXiv/DOI) or uploaded PDF files
    */
   static async buildGraph(
-    files: File[],
+    papers: Array<{type: 'arxiv' | 'doi' | 'pdf', value: string} | File>,
     options?: {
       includeIntermediate?: boolean;
       maxDepth?: number;
@@ -79,9 +81,27 @@ export class GraphAPI {
   ): Promise<BuildGraphResponse> {
     const formData = new FormData();
     
+    // Separate files from identifiers
+    const files: File[] = [];
+    const identifiers: Array<{type: string, value: string}> = [];
+    
+    for (const paper of papers) {
+      if (paper instanceof File) {
+        files.push(paper);
+      } else {
+        identifiers.push(paper);
+      }
+    }
+    
+    // Add files to form data
     files.forEach((file) => {
       formData.append('files', file);
     });
+    
+    // Add identifiers as JSON string
+    if (identifiers.length > 0) {
+      formData.append('paper_identifiers', JSON.stringify(identifiers));
+    }
 
     const url = new URL(`${API_BASE_URL}/api/graph/build`);
     if (options?.includeIntermediate) {
@@ -97,7 +117,8 @@ export class GraphAPI {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to build graph: ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`Failed to build graph: ${errorText}`);
     }
 
     return response.json();
@@ -219,6 +240,32 @@ export class GraphAPI {
 
     if (!response.ok) {
       throw new Error(`Failed to get graph: ${response.statusText}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Extract edge innovations using LLM
+   */
+  static async extractEdgeInnovations(
+    graphId: string,
+    maxParallel: number = 5
+  ): Promise<{ graph: ResearchGraph; stats: { edges_processed: number; total_edges: number } }> {
+    const response = await fetch(`${API_BASE_URL}/api/graph/extract-edges`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        graph_id: graphId,
+        max_parallel: maxParallel,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to extract edge innovations: ${errorText}`);
     }
 
     return response.json();

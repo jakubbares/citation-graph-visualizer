@@ -1,10 +1,10 @@
-import type { Stylesheet } from 'cytoscape';
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
  * Modern, beautiful stylesheet for citation graph visualization
  * Based on best practices from Neo4j Bloom, Gephi, and modern data viz
  */
-export function getModernCytoscapeStyle(): Stylesheet[] {
+export function getModernCytoscapeStyle(): any[] {
   return [
     // ============ BASE NODE STYLES ============
     {
@@ -195,24 +195,90 @@ export function getModernCytoscapeStyle(): Stylesheet[] {
       },
     },
 
-    // ============ INPUT PAPERS (user uploaded) ============
+    // ============ REVIEWED PAPERS (papers referenced by the review) ============
     {
-      selector: 'node[paper_source = "input"]',
+      selector: 'node[paper_source = "reviewed"]',
       style: {
+        'background-color': '#10B981',
         'border-width': 4,
-        'border-color': '#2980B9',
+        'border-color': '#047857',
         'background-opacity': 1.0,
+        'font-weight': '700',
+        'font-size': '12px',
+        'color': '#064E3B',
+        'text-outline-color': '#D1FAE5',
+        'text-outline-width': 2,
+        'text-background-color': '#D1FAE5',
+        'text-background-opacity': 0.9,
       },
     },
 
-    // ============ INTERMEDIATE PAPERS (from Semantic Scholar) ============
+    // ============ CONNECTING PAPERS (bridge papers added for analysis) ============
     {
-      selector: 'node[paper_source = "intermediate"]',
+      selector: 'node[paper_source = "connecting"]',
       style: {
+        'background-color': '#94A3B8',
         'border-width': 2,
-        'border-style': 'dashed',
-        'border-color': '#95A5A6',
-        'background-opacity': 0.7,
+        'border-color': '#64748B',
+        'border-style': 'solid',
+        'background-opacity': 0.75,
+        'font-size': '10px',
+        'font-weight': '500',
+        'color': '#334155',
+        'text-outline-color': '#F1F5F9',
+        'text-outline-width': 2,
+        'text-background-color': '#F1F5F9',
+        'text-background-opacity': 0.85,
+      },
+    },
+    
+    // ============ CLUSTER COLORS ============
+    {
+      selector: 'node[cluster_id = 0]',
+      style: {
+        'background-color': '#3498DB',
+      },
+    },
+    {
+      selector: 'node[cluster_id = 1]',
+      style: {
+        'background-color': '#E74C3C',
+      },
+    },
+    {
+      selector: 'node[cluster_id = 2]',
+      style: {
+        'background-color': '#2ECC71',
+      },
+    },
+    {
+      selector: 'node[cluster_id = 3]',
+      style: {
+        'background-color': '#F39C12',
+      },
+    },
+    {
+      selector: 'node[cluster_id = 4]',
+      style: {
+        'background-color': '#9B59B6',
+      },
+    },
+    {
+      selector: 'node[cluster_id = 5]',
+      style: {
+        'background-color': '#1ABC9C',
+      },
+    },
+    {
+      selector: 'node[cluster_id = 6]',
+      style: {
+        'background-color': '#E67E22',
+      },
+    },
+    {
+      selector: 'node[cluster_id = 7]',
+      style: {
+        'background-color': '#95A5A6',
       },
     },
 
@@ -380,6 +446,18 @@ export const LAYOUT_CONFIGS = {
     animate: true,
     animationDuration: 800,
     animationEasing: 'ease-in-out-cubic',
+  },
+  
+  // Timeline layout (left-to-right by publication date)
+  timeline: {
+    name: 'dagre',
+    rankDir: 'LR',  // Left to right
+    nodeSep: 80,
+    rankSep: 200,
+    animate: true,
+    animationDuration: 800,
+    animationEasing: 'ease-in-out-cubic',
+    ranker: 'tight-tree',
   },
   
   // Circular layout (for small graphs)

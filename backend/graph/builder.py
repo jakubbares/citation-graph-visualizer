@@ -79,6 +79,10 @@ class GraphBuilder:
         input_paper_ids_s2 = citation_network.get("input_paper_ids", [])
         intermediate_paper_ids_s2 = citation_network.get("intermediate_paper_ids", [])
         
+        print(f"   DEBUG: s2_papers count: {len(s2_papers)}")
+        print(f"   DEBUG: input_paper_ids_s2: {input_paper_ids_s2}")
+        print(f"   DEBUG: First 5 s2_papers keys: {list(s2_papers.keys())[:5]}")
+        
         s2_paper_id_to_node_id = {}  # Map S2 paper ID to our node ID
         
         # Step 1: Create nodes for INPUT papers (uploaded by user)
@@ -86,14 +90,26 @@ class GraphBuilder:
         for paper in papers:
             title_lower = paper.title.lower().strip()
             
-            # Find matching S2 paper
+            # Find matching S2 paper BY ID (more reliable than title matching)
             s2_paper = None
             s2_paper_id = None
-            for s2_id, s2_data in s2_papers.items():
-                if s2_id in input_paper_ids_s2 and s2_data["title"].lower().strip() == title_lower:
-                    s2_paper = s2_data
-                    s2_paper_id = s2_id
-                    break
+            
+            # First, try to match by checking if this paper's title matches any input paper in S2
+            for s2_id in input_paper_ids_s2:
+                if s2_id in s2_papers:
+                    s2_data = s2_papers[s2_id]
+                    # Match by title (fuzzy) or just take the first input paper if we only have one
+                    if len(papers) == 1 and len(input_paper_ids_s2) == 1:
+                        # If we only have 1 input paper, just use it
+                        s2_paper = s2_data
+                        s2_paper_id = s2_id
+                        print(f"   📌 Matched input paper by position: {s2_id}")
+                        break
+                    elif s2_data["title"].lower().strip() == title_lower:
+                        s2_paper = s2_data
+                        s2_paper_id = s2_id
+                        print(f"   📌 Matched input paper by title: {s2_id}")
+                        break
             
             node = self._create_node_from_paper(paper)
             
@@ -152,6 +168,11 @@ class GraphBuilder:
         
         # Step 3: Create edges from citation data
         print(f"🔗 Creating edges from citation data...")
+        print(f"   citation_network keys: {list(citation_network.keys())}")
+        print(f"   citations in network: {len(citation_network.get('citations', []))}")
+        if len(citation_network.get('citations', [])) > 0:
+            print(f"   First citation: {citation_network.get('citations', [])[0]}")
+        
         edges_created = 0
         for citation in citation_network.get("citations", []):
             from_s2_id = citation["from"]
@@ -170,6 +191,8 @@ class GraphBuilder:
                 )
                 graph.add_edge(edge)
                 edges_created += 1
+            elif edges_created < 3:  # Debug first few failures
+                print(f"     SKIP edge: from_s2={from_s2_id[:20]}... to_s2={to_s2_id[:20]}... (from_node={from_node_id}, to_node={to_node_id})")
         
         print(f"✅ Created {edges_created} edges")
         

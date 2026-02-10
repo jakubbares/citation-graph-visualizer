@@ -5,26 +5,27 @@ import GraphCanvas from '@/components/GraphCanvas';
 import PaperUpload from '@/components/PaperUpload';
 import ExtractorPanel from '@/components/ExtractorPanel';
 import VisualEncodingPanel from '@/components/VisualEncodingPanel';
-import DetailPanel from '@/components/DetailPanel';
-import { GraphAPI, type ResearchGraph, type ExtractorConfig } from '@/lib/api';
+import EdgeDetailModal from '@/components/EdgeDetailModal';
+import { GraphAPI, type ResearchGraph, type ExtractorConfig, type CitationEdge } from '@/lib/api';
 
 export default function Home() {
   const [graph, setGraph] = useState<ResearchGraph | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [isExtractingEdges, setIsExtractingEdges] = useState(false);
   const [isVisualizing, setIsVisualizing] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<CitationEdge | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleBuildGraph = async (files: File[], includeIntermediate: boolean) => {
+  const handleBuildGraph = async (papers: Array<{type: 'arxiv' | 'doi' | 'pdf', value: string} | File>, includeIntermediate: boolean) => {
     try {
       setIsBuilding(true);
       setError(null);
-      console.log('Building graph from files:', files.map(f => f.name));
+      console.log('Building graph from papers:', papers);
       console.log('Include intermediate papers:', includeIntermediate);
 
-      const response = await GraphAPI.buildGraph(files, {
+      const response = await GraphAPI.buildGraph(papers, {
         includeIntermediate: includeIntermediate,
         maxDepth: 1,
       });
@@ -47,9 +48,8 @@ export default function Home() {
       setError(null);
       console.log('Extracting features:', extractors);
 
-      const response = await GraphAPI.extractFeatures(graph.id, extractors);
+      await GraphAPI.extractFeatures(graph.id, extractors);
       
-      // Refresh graph
       const updatedGraph = await GraphAPI.getGraph(graph.id);
       setGraph(updatedGraph);
       
@@ -62,18 +62,35 @@ export default function Home() {
     }
   };
 
+  const handleExtractEdges = async () => {
+    if (!graph) return;
+
+    try {
+      setIsExtractingEdges(true);
+      setError(null);
+      console.log('Extracting edge innovations...');
+
+      const response = await GraphAPI.extractEdgeInnovations(graph.id);
+      setGraph(response.graph);
+
+      console.log('Edge innovations extracted:', response.stats);
+    } catch (err: any) {
+      console.error('Error extracting edge innovations:', err);
+      setError(err.message || 'Failed to extract edge innovations');
+    } finally {
+      setIsExtractingEdges(false);
+    }
+  };
+
   const handleApplyVisualEncoding = async (encoding: any) => {
     if (!graph) return;
 
     try {
       setIsVisualizing(true);
       setError(null);
-      console.log('Applying visual encoding:', encoding);
 
       const response = await GraphAPI.visualizeGraph(graph.id, encoding);
       setGraph(response.styled_graph);
-      
-      console.log('Visual encoding applied successfully');
     } catch (err: any) {
       console.error('Error applying visual encoding:', err);
       setError(err.message || 'Failed to apply visual encoding');
@@ -82,77 +99,99 @@ export default function Home() {
     }
   };
 
+  const edgesExtracted = graph?.extractors_applied?.includes('edge_innovations') ?? false;
+
   return (
-    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
-      {/* Modern Header with gradient */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-gray-200/50 px-6 py-4 shadow-sm">
+    <div className="h-screen flex flex-col bg-slate-950">
+      {/* Animated background */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse"></div>
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl animate-pulse" style={{animationDelay: '1s'}}></div>
+        <div className="absolute top-1/2 left-1/2 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl animate-pulse" style={{animationDelay: '2s'}}></div>
+      </div>
+
+      {/* Header */}
+      <header className="relative glass-dark border-b border-white/5 px-8 py-4 shadow-2xl z-10">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg">
-              <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-              </svg>
+          <div className="flex items-center gap-5">
+            <div className="relative">
+              <div className="absolute inset-0 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl blur-xl opacity-75 animate-pulse"></div>
+              <div className="relative w-14 h-14 animated-gradient rounded-2xl flex items-center justify-center shadow-2xl transform hover:scale-110 transition-transform">
+                <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
             </div>
             <div>
-              <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-                Citation Graph Visualizer
+              <h1 className="text-3xl font-black gradient-text tracking-tight">
+                Science Station
               </h1>
-              <p className="text-sm text-gray-600 mt-0.5">
-                Interactive research paper citation network analysis
+              <p className="text-sm text-slate-400 mt-1 font-medium">
+                AI-Powered Research Network Analysis
               </p>
             </div>
           </div>
-          {graph && (
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2 px-4 py-2 bg-blue-100 rounded-lg">
-                <div className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></div>
-                <span className="text-sm font-semibold text-blue-900">{graph.nodes.length}</span>
-                <span className="text-sm text-blue-700">papers</span>
+          
+          {graph && (() => {
+            const inputIds = new Set(graph.nodes.filter(n => n.attributes?.paper_source === 'input').map(n => n.id));
+            const visibleNodes = graph.nodes.filter(n => !inputIds.has(n.id));
+            const visibleEdges = graph.edges.filter(e => !inputIds.has(e.from_paper) && !inputIds.has(e.to_paper));
+            return (
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3 px-6 py-3 glass rounded-xl glow-blue">
+                  <div className="w-3 h-3 rounded-full bg-emerald-400 pulse-glow"></div>
+                  <div>
+                    <span className="text-2xl font-bold text-emerald-400">{visibleNodes.length}</span>
+                    <span className="text-sm text-slate-300 ml-2">papers</span>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-3 px-6 py-3 glass rounded-xl glow-purple">
+                  <div className="w-3 h-3 rounded-full bg-purple-400 pulse-glow" style={{animationDelay: '0.5s'}}></div>
+                  <div>
+                    <span className="text-2xl font-bold text-purple-400">{visibleEdges.length}</span>
+                    <span className="text-sm text-slate-300 ml-2">citations</span>
+                  </div>
+                </div>
+
+                <button className="px-6 py-3 animated-gradient text-white font-bold rounded-xl shadow-2xl hover:scale-105 transition-transform">
+                  Export
+                </button>
               </div>
-              <div className="flex items-center gap-2 px-4 py-2 bg-indigo-100 rounded-lg">
-                <div className="w-2 h-2 rounded-full bg-indigo-600 animate-pulse"></div>
-                <span className="text-sm font-semibold text-indigo-900">{graph.edges.length}</span>
-                <span className="text-sm text-indigo-700">citations</span>
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       </header>
 
       {/* Error banner */}
       {error && (
-        <div className="bg-red-50 border-b border-red-200 px-6 py-3">
-          <div className="flex items-start">
-            <div className="flex-shrink-0">
-              <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+        <div className="relative glass-dark border-b border-red-500/20 px-8 py-4 z-10">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 bg-red-500/20 rounded-full flex items-center justify-center">
+              <svg className="h-6 w-6 text-red-400" viewBox="0 0 20 20" fill="currentColor">
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
               </svg>
             </div>
-            <div className="ml-3">
-              <p className="text-sm text-red-800">{error}</p>
-            </div>
-            <div className="ml-auto pl-3">
-              <button
-                onClick={() => setError(null)}
-                className="inline-flex text-red-400 hover:text-red-500"
-              >
-                <span className="sr-only">Dismiss</span>
-                <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                </svg>
-              </button>
-            </div>
+            <p className="text-red-300 font-medium flex-1">{error}</p>
+            <button
+              onClick={() => setError(null)}
+              className="w-8 h-8 flex items-center justify-center text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-all"
+            >
+              <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+            </button>
           </div>
         </div>
       )}
 
-      {/* Main content with modern panels */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar - Modern glass morphism design */}
-        <div className="w-80 bg-white/60 backdrop-blur-lg border-r border-gray-200/50 overflow-y-auto shadow-xl">
-          <div className="p-4 space-y-4">
+      {/* Main content */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Left sidebar */}
+        <div className="w-96 glass-dark border-r border-white/5 overflow-y-auto shadow-2xl z-10">
+          <div className="p-6 space-y-6">
             <PaperUpload
-              onFilesSelected={handleBuildGraph}
+              onPapersSubmit={handleBuildGraph}
               isLoading={isBuilding}
             />
             
@@ -160,7 +199,10 @@ export default function Home() {
               <>
                 <ExtractorPanel
                   onExtract={handleExtract}
+                  onExtractEdges={handleExtractEdges}
                   isLoading={isExtracting}
+                  isExtractingEdges={isExtractingEdges}
+                  edgesExtracted={edgesExtracted}
                 />
                 
                 <VisualEncodingPanel
@@ -173,25 +215,41 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Center - Graph visualization with modern styling */}
-        <div className="flex-1 relative">
+        {/* Center - Graph visualization */}
+        <div className="flex-1 relative bg-slate-900/50">
+          {!graph && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="text-center">
+                <div className="relative mx-auto w-32 h-32 mb-8">
+                  <div className="absolute inset-0 animated-gradient rounded-full blur-2xl opacity-50"></div>
+                  <div className="relative w-full h-full glass rounded-full flex items-center justify-center">
+                    <svg className="w-16 h-16 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                </div>
+                <h2 className="text-2xl font-bold text-slate-200 mb-3">Start Your Analysis</h2>
+                <p className="text-slate-400 max-w-md">
+                  Upload papers or paste ArXiv IDs to build your citation network
+                </p>
+              </div>
+            </div>
+          )}
           <GraphCanvas
             graph={graph}
             onNodeSelect={setSelectedNodeId}
-            onEdgeSelect={setSelectedEdgeId}
-            layout="force"
-          />
-        </div>
-
-        {/* Right sidebar - Modern glass morphism design */}
-        <div className="w-96 bg-white/60 backdrop-blur-lg border-l border-gray-200/50 overflow-hidden shadow-xl">
-          <DetailPanel
-            graph={graph}
-            selectedNodeId={selectedNodeId}
-            selectedEdgeId={selectedEdgeId}
+            onEdgeSelect={setSelectedEdge}
+            layout="timeline"
           />
         </div>
       </div>
+
+      {/* Edge Detail Modal */}
+      <EdgeDetailModal
+        edge={selectedEdge}
+        graph={graph}
+        onClose={() => setSelectedEdge(null)}
+      />
     </div>
   );
 }
